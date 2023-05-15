@@ -32,6 +32,10 @@ void mem_init(void)
 
     mem_max_addr = mem_start_brk + MAX_HEAP;  /* max legal heap address */
     mem_brk = mem_start_brk;                  /* heap is empty initially */
+
+    // mem_heap = (char *)malloc(MAX_HEAP);
+    // mem_brk = (char *)mem_heap;
+    // mem_max_addr = (char *)(mem_heap + MAX_HEAP);
 }
 
 /* 
