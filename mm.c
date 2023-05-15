@@ -20,30 +20,30 @@
 
 //=====================가용 리스트 조작을 위한 기본 상수 및 매크로 정의======================
 //기본 상수 및 매크로
-#define WSIZE 4
-#define DSIZE 8
-#define CHUNKSIZE (1 << 12)
+#define WSIZE 4     //워드 크기
+#define DSIZE 8     //더블 크기 
+#define CHUNKSIZE (1 << 12) //호가장을 위한 기본 크기
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 //단어에 크기와 할당된 비트를 입력합니다.
-#define PACK(size, alloc) ((size) | (alloc))
+#define PACK(size, alloc) ((size) | (alloc))    //크기와 할당 비트를 통합해서 헤더와 풋터에 저장할 수 있는 값을 리턴
 
 //주소p에서 크기 및 할당된 파일 필드 읽기
-#define GET(p) (*(unsigned int *)(p))
-#define PUT(p, val) (*(unsigned int *)(p) = (val))
+#define GET(p) (*(unsigned int *)(p))   //p(포인터)가 참조하는 워드를 읽어서 리턴
+#define PUT(p, val) (*(unsigned int *)(p) = (val))  //p가 가르키는 워드를 val에 저장
 
 //주소 p에서 크기 및 할당된 필드 읽기
-#define GET_SIZE(p) (GET(p) & ~0x7)
-#define GET_ALLOC(p) (GET(p) & 0x1)
+#define GET_SIZE(p) (GET(p) & ~0x7)     //헤더 or 풋터의 size를 리턴한다.
+#define GET_ALLOC(p) (GET(p) & 0x1)     //헤더 or 풋터의 할당 비트를 리턴한다
 
 //주어진 블록 포인터 bp로부터 해당 블록의 헤더와 푸터의 주소를 계산하세요.
-#define HDRP(bp) ((char *)(bp) - WSIZE)
-#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
+#define HDRP(bp) ((char *)(bp) - WSIZE)     //헤더를 가르키는 포인터를 리턴
+#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)    //풋터를 가르키는 포인터를 리턴
 
 //주어진 블록 포인터(bp)를 이용하여, 다음과 이전 블록의 주소를 계산하세요.
-#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
-#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))     //다음 블록의 포인터를 리턴
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))     //이전 블록의 포인터를 리턴
 
 /*********************************************************
  * NOTE TO STUDENTS: Before you do anything else, please
@@ -70,8 +70,8 @@ team_t team = {
 
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
-static char *heap_listp;
-
+static void *heap_listp;
+static char *last_bp;
 /* 
  * mm_init - initialize the malloc package.
  */
@@ -84,6 +84,7 @@ static void *coalesce(void *bp)
 
     if(prev_alloc && next_alloc)
     {
+        last_bp = bp;
         return bp;
     }
     else if(prev_alloc && !next_alloc)
@@ -106,6 +107,7 @@ static void *coalesce(void *bp)
         PUT(FTRP(NEXT_BLKP(bp)),PACK(size , 0));
         bp = PREV_BLKP(bp);
     }
+    last_bp = bp;
     return bp;
 }
 
@@ -124,7 +126,7 @@ static void *extend_heap(size_t words)
     PUT(FTRP(bp),PACK(size,0));
     PUT(HDRP(NEXT_BLKP(bp)),PACK(0,1));
 
-    //이전 블록이 free였다면 병합해라
+    //이전 블록이 사용 가능한 경우 병합
     return coalesce(bp);
 }
 
@@ -149,6 +151,31 @@ static void *find_fit(size_t asize)
     }
     return NULL;
     //#endif
+}
+
+static void *next_fit(size_t aszie)
+{
+    char *bp = last_bp;
+
+    for (bp = NEXT_BLKP(bp);  GET_SIZE(HDRP(bp)) != 0; bp = NEXT_BLKP(bp))
+    {
+        if(!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= aszie)
+        {
+            last_bp = bp;
+            return bp;
+        }
+    }
+    bp = heap_listp;
+    while(bp < last_bp)
+    {
+        bp = NEXT_BLKP(bp);
+        if(!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= aszie)
+        {
+            last_bp = bp;
+            return bp;
+        }
+    }
+    return NULL;
 }
 
 static void *place(void *bp,size_t asize)
@@ -184,6 +211,7 @@ int mm_init(void)
     //CHUNKSIZE 바이트의 빈 블록으로 빈힙을 확장하세요
     if(extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
+    last_bp = (char *)heap_listp; //next_fit 추가
     return 0;
 }
 
@@ -193,28 +221,41 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
-    size_t asize;
-    size_t extendsize;
+    size_t asize;   //수정된 블록 크기
+    size_t extendsize;  //적합하지 않은 경우 힙을 확장할 양
     char *bp;
 
+    //가상 요청 무시
     if(size == 0)
         return NULL;
     
+    //오버헤드 및 정렬 요청을 포함하도록 블록 크기 조정
     if(size <= DSIZE)
         asize = 2*DSIZE;
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
-    if((bp = find_fit(asize)) != NULL)
+    //무료 목록을 검색하여 적합성 확인
+    // if((bp = find_fit(asize)) != NULL) //first_fit 사용
+    // {
+    //     place(bp,asize);
+    //     return bp;
+    // }
+
+    //next_fit 사용
+    if((bp = next_fit(asize)) != NULL)
     {
         place(bp,asize);
+        last_bp = bp;
         return bp;
     }
 
+    //적합치를 찾을 수 없습니다. 더 많은 메모리를 확보하고 블록 배치
     extendsize = MAX(asize,CHUNKSIZE);
     if((bp = extend_heap(extendsize/WSIZE)) == NULL)
         return NULL;
     place(bp,asize);
+    last_bp = bp;
     return bp;
 
     // int newsize = ALIGN(size + SIZE_T_SIZE);
